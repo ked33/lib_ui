@@ -132,6 +132,7 @@ public:
 	[[nodiscard]] TitleControlsLayout &layout() const;
 	[[nodiscard]] QRect geometry() const;
 	void setResizeEnabled(bool enabled);
+	void setMaximizedState(bool maximized);
 	void raise();
 
 	[[nodiscard]] HitTestResult hitTest(QPoint point) const;
