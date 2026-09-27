@@ -251,6 +251,14 @@ void TitleControls::setResizeEnabled(bool enabled) {
 	updateControlsPosition();
 }
 
+void TitleControls::setMaximizedState(bool maximized) {
+	if (_maximizedState == maximized) {
+		return;
+	}
+	_maximizedState = maximized;
+	updateButtonsState();
+}
+
 void TitleControls::raise() {
 	_minimize->raise();
 	_maximizeRestore->raise();
