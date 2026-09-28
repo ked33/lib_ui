@@ -323,6 +323,26 @@ void WindowHelper::updateLayeredStyle() {
 	}
 }
 
+void WindowHelper::clearRedirectionSurface() {
+	if (!_handle || !composedWithAlpha()) {
+		return;
+	}
+	auto rect = RECT();
+	if (!GetClientRect(_handle, &rect)) {
+		return;
+	}
+	const auto dc = GetDC(_handle);
+	if (!dc) {
+		return;
+	}
+	const auto guard = gsl::finally([&] { ReleaseDC(_handle, dc); });
+	// DWM composites this legacy bitmap beneath the DirectComposition visual.
+	if (!PatBlt(dc, 0, 0, rect.right, rect.bottom, BLACKNESS)) {
+		LOG(("Window: Could not clear Direct3D redirection surface (%1)."
+			).arg(GetLastError()));
+	}
+}
+
 void WindowHelper::setMinimumSize(QSize size) {
 	window()->setMinimumSize(size.width(), titleHeight() + size.height());
 }
@@ -894,12 +914,17 @@ void WindowHelper::enableCloakingForHidden() {
 
 	updateCloaking();
 
+	const auto handle = _handle;
 	const auto qwindow = window()->windowHandle();
 	const auto firstExposeFilter = std::make_shared<QObject*>();
 	const auto filter = [=](not_null<QEvent*> e) {
 		if (e->type() == QEvent::Expose && qwindow->isExposed()) {
 			InvokeQueued(qwindow, [=] {
 				InvokeQueued(qwindow, [=] {
+					if (_handle != handle || window()->isHidden()) {
+						return;
+					}
+					clearRedirectionSurface();
 					updateCloaking();
 				});
 			});
