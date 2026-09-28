@@ -56,6 +56,7 @@ private:
 	void updateShadow();
 	void updateCornersRounding();
 	void updateLayeredStyle();
+	void clearRedirectionSurface();
 	void fixMaximizedWindow();
 	[[nodiscard]] bool filterNativeEvent(
 		UINT msg,
