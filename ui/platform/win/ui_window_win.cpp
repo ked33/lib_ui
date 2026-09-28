@@ -306,6 +306,21 @@ void WindowHelper::updateLayeredStyle() {
 	if (style & WS_EX_LAYERED) {
 		SetWindowLongPtr(_handle, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
 	}
+	const auto region = CreateRectRgn(0, 0, -1, -1);
+	if (!region) {
+		return;
+	}
+	const auto guard = gsl::finally([&] { DeleteObject(region); });
+	// Qt enables client alpha before applying the initial layered style.
+	auto blur = DWM_BLURBEHIND();
+	blur.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
+	blur.fEnable = TRUE;
+	blur.hRgnBlur = region;
+	const auto result = DwmEnableBlurBehindWindow(_handle, &blur);
+	if (FAILED(result)) {
+		LOG(("Window: Could not restore Direct3D client alpha (%1)."
+			).arg(uint32(result)));
+	}
 }
 
 void WindowHelper::setMinimumSize(QSize size) {
@@ -396,8 +411,8 @@ void WindowHelper::init() {
 					|| !composedWithAlpha()) {
 					return;
 				}
-				updateLayeredStyle();
 				setNativeFrame(_title->isHidden());
+				updateLayeredStyle();
 				window()->update();
 			});
 			if (window()->isHidden()) {
