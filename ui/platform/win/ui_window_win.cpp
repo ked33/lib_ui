@@ -295,6 +295,19 @@ void WindowHelper::updateCornersRounding() {
 		sizeof(preference));
 }
 
+void WindowHelper::updateLayeredStyle() {
+	// Qt presents a translucent Direct3D window through DirectComposition,
+	// which keeps per-pixel alpha. WS_EX_LAYERED, added by Qt for every
+	// translucent window, makes DWM apply one uniform opacity instead.
+	if (!_handle || !composedWithAlpha()) {
+		return;
+	}
+	const auto style = GetWindowLongPtr(_handle, GWL_EXSTYLE);
+	if (style & WS_EX_LAYERED) {
+		SetWindowLongPtr(_handle, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
+	}
+}
+
 void WindowHelper::setMinimumSize(QSize size) {
 	window()->setMinimumSize(size.width(), titleHeight() + size.height());
 }
@@ -375,6 +388,7 @@ void WindowHelper::init() {
 			updateWindowFrameColors();
 			updateShadow();
 			updateCornersRounding();
+			updateLayeredStyle();
 			updateMargins();
 			if (window()->isHidden()) {
 				enableCloakingForHidden();
@@ -609,6 +623,14 @@ bool WindowHelper::filterNativeEvent(
 		}
 	} return false;
 
+	case WM_STYLECHANGING: {
+		// Qt adds WS_EX_LAYERED again on flags and opacity changes.
+		if (wParam == GWL_EXSTYLE && composedWithAlpha()) {
+			const auto change = reinterpret_cast<STYLESTRUCT*>(lParam);
+			change->styleNew &= ~WS_EX_LAYERED;
+		}
+	} return false;
+
 	case WM_SHOWWINDOW: {
 		if (_shadow) {
 			const auto style = GetWindowLongPtr(_handle, GWL_STYLE);
@@ -691,6 +713,17 @@ bool WindowHelper::filterNativeEvent(
 
 bool WindowHelper::fixedSize() const {
 	return window()->minimumSize() == window()->maximumSize();
+}
+
+bool WindowHelper::composedWithAlpha() const {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	const auto handle = window()->windowHandle();
+	return handle
+		&& (handle->surfaceType() == QSurface::Direct3DSurface)
+		&& window()->testAttribute(Qt::WA_TranslucentBackground);
+#else // Qt >= 6
+	return false;
+#endif // Qt < 6
 }
 
 bool WindowHelper::handleSystemButtonEvent(

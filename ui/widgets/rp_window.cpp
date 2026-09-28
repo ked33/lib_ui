@@ -30,17 +30,7 @@ RpWindow::RpWindow(bool translucent, QWidget *parent)
 		setAttribute(Qt::WA_NoSystemBackground, true);
 		setAttribute(Qt::WA_TranslucentBackground, true);
 	}
-	// A hidden QRhiWidget primes a Direct3D swapchain for the whole window.
-	// On Windows Qt 6 that swapchain is presented with a uniform layered
-	// opacity, so a translucent viewer loses per-pixel alpha and its veil
-	// becomes an opaque gray. Leave those windows on the raster path.
-#if defined Q_OS_WIN && QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-	if (!translucent) {
-		GL::EnsureWindowRhi(this);
-	}
-#else // !Q_OS_WIN || Qt < 6
 	GL::EnsureWindowRhi(this);
-#endif // Q_OS_WIN && Qt >= 6
 	return Platform::CreateWindowHelper(this);
 }()) {
 	Expects(_helper != nullptr);

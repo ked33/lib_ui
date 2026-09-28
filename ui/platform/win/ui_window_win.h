@@ -55,6 +55,7 @@ private:
 	void updateWindowFrameColors(bool active);
 	void updateShadow();
 	void updateCornersRounding();
+	void updateLayeredStyle();
 	void fixMaximizedWindow();
 	[[nodiscard]] bool filterNativeEvent(
 		UINT msg,
@@ -67,6 +68,7 @@ private:
 		LPARAM lParam,
 		LRESULT *result);
 	[[nodiscard]] bool fixedSize() const;
+	[[nodiscard]] bool composedWithAlpha() const;
 	[[nodiscard]] int systemButtonHitTest(HitTestResult result) const;
 	[[nodiscard]] HitTestResult systemButtonHitTest(int result) const;
 
