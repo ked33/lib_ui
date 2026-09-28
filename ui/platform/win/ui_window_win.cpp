@@ -390,6 +390,16 @@ void WindowHelper::init() {
 			updateCornersRounding();
 			updateLayeredStyle();
 			updateMargins();
+			// Wait until Qt finishes initializing the recreated platform window.
+			InvokeQueued(window(), [=] {
+				if (_handle != reinterpret_cast<HWND>(winId)
+					|| !composedWithAlpha()) {
+					return;
+				}
+				updateLayeredStyle();
+				setNativeFrame(_title->isHidden());
+				window()->update();
+			});
 			if (window()->isHidden()) {
 				enableCloakingForHidden();
 			}
