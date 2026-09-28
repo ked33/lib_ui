@@ -60,16 +60,6 @@ not_null<RpWidget*> Window::widget() const {
 std::unique_ptr<RpWindow> Window::createWindow(
 		const Fn<Backend(Capabilities)> &chooseBackend,
 		bool translucent) {
-#if defined Q_OS_WIN && QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-	// QRhiWidget::setRenderToTexture() promotes the top-level window to the
-	// same Direct3D swapchain as EnsureWindowRhi(). The raster surface keeps
-	// UpdateLayeredWindow per-pixel alpha for the viewer background.
-	if (translucent) {
-		_backend = Backend::Raster;
-		LOG(("Renderer: [Raster] (Window)"));
-		return std::make_unique<RpWindow>(translucent);
-	}
-#endif // Q_OS_WIN && Qt >= 6
 	_backend = chooseBackend(CheckCapabilities());
 	return std::make_unique<RpWindow>(translucent);
 }
