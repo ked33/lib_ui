@@ -535,9 +535,11 @@ bool WindowHelper::filterNativeEvent(
 	} return false;
 
 	case WM_NCPAINT: {
-		if (::Platform::IsWindows8OrGreater() || _title->isHidden()) {
+		if (_title->isHidden()
+			|| (::Platform::IsWindows8OrGreater() && !composedWithAlpha())) {
 			return false;
 		}
+		// Native frames show through the translucent DirectComposition visual.
 		if (result) *result = 0;
 	} return true;
 
@@ -608,7 +610,10 @@ bool WindowHelper::filterNativeEvent(
 		if (_title->isHidden()) {
 			return false;
 		}
-		if (IsCompositionEnabled()) {
+		if (composedWithAlpha()) {
+			// Match Qt's frameless activation path to avoid a native caption.
+			if (result) *result = TRUE;
+		} else if (IsCompositionEnabled()) {
 			const auto res = DefWindowProc(_handle, msg, wParam, -1);
 			if (result) *result = res;
 		} else {
