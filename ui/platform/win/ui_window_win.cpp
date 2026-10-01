@@ -27,7 +27,11 @@
 #include <QtGui/QWindow>
 #include <QtWidgets/QStyleFactory>
 #include <QtWidgets/QApplication>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <qpa/qplatformwindow_p.h>
+#else
 #include <qpa/qplatformnativeinterface.h>
+#endif // Qt < 6
 #include <qpa/qwindowsysteminterface.h>
 
 #include <dwmapi.h>
@@ -930,6 +934,10 @@ void WindowHelper::enableCloakingForHidden() {
 						return;
 					}
 					clearRedirectionSurface();
+					if (composedWithAlpha()) {
+						// The first backing store may have the old client size.
+						Ui::ForceFullRepaintSync(window());
+					}
 					updateCloaking();
 				});
 			});
@@ -1007,12 +1015,24 @@ void WindowHelper::updateMargins() {
 			_marginsDelta = QMargins();
 		}
 	}
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	using QNativeInterface::Private::QWindowsWindow;
+	const auto handle = window()->windowHandle();
+	if (handle->flags() & Qt::FramelessWindowHint) {
+		return;
+	}
+	// Qt 6 no longer implements the WindowsCustomMargins platform property.
+	if (const auto native = handle->nativeInterface<QWindowsWindow>()) {
+		native->setCustomMargins(margins);
+	}
+#else
 	if (const auto native = QGuiApplication::platformNativeInterface()) {
 		native->setWindowProperty(
 			window()->windowHandle()->handle(),
 			"WindowsCustomMargins",
 			QVariant::fromValue<QMargins>(margins));
 	}
+#endif // Qt < 6
 }
 
 void WindowHelper::fixMaximizedWindow() {
