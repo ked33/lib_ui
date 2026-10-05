@@ -332,8 +332,15 @@ void Content::subscribeToBody() {
 		}
 		requestShellRelayout();
 	}, lifetime());
-	body->sizeValue() | rpl::on_next([=]() {
+	auto firstSize = true;
+	body->sizeValue() | rpl::on_next([=]() mutable {
 		refreshNaturalWidth();
+		if (std::exchange(firstSize, false)) {
+			return;
+		}
+		Ui::PostponeCall(this, [=] {
+			requestShellRelayout();
+		});
 	}, lifetime());
 }
 
