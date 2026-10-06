@@ -645,7 +645,20 @@ void PopupMenu::mousePressEvent(QMouseEvent *e) {
 	if (e->source() != Qt::MouseEventSynthesizedBySystem
 		|| (Integration::Instance().touchCounterNow()
 			> _touchBeginCounter)) {
-		forwardMousePress(e->globalPos());
+		const auto position = e->globalPos();
+		auto target = this;
+		for (auto submenu = _activeSubmenu
+			; submenu
+			; submenu = submenu->_activeSubmenu) {
+			if (submenu->isHidden() || submenu->_hiding) {
+				break;
+			}
+			if (submenu->_inner.contains(submenu->mapFromGlobal(position))) {
+				target = submenu;
+			}
+		}
+		e->accept();
+		target->forwardMousePress(position);
 	}
 }
 
