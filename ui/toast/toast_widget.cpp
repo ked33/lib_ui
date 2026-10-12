@@ -332,10 +332,10 @@ void Content::subscribeToBody() {
 		}
 		requestShellRelayout();
 	}, lifetime());
-	auto firstSize = true;
-	body->sizeValue() | rpl::on_next([=]() mutable {
+	const auto firstSize = lifetime().make_state<bool>(true);
+	body->sizeValue() | rpl::on_next([=]() {
 		refreshNaturalWidth();
-		if (std::exchange(firstSize, false)) {
+		if (std::exchange(*firstSize, false)) {
 			return;
 		}
 		Ui::PostponeCall(this, [=] {
