@@ -482,7 +482,7 @@ void Widget::updateGeometry() {
 					middle.y());
 			case RectPart::Top:
 				return QPoint(
-					middle.x(),
+					full.x() - width - _st->margin.right(),
 					interpolated(-height, _st->margin.top() + add));
 			case RectPart::Right:
 				return QPoint(
@@ -492,7 +492,7 @@ void Widget::updateGeometry() {
 					middle.y());
 			case RectPart::Bottom:
 				return QPoint(
-					middle.x(),
+					full.x() - width - _st->margin.right(),
 					full.y() - interpolated(
 						0,
 						height + _st->margin.bottom() + add));
