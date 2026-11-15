@@ -13,6 +13,9 @@
 #include "ui/ui_utility.h"
 #include "ui/painter.h"
 
+#include <QtCore/QCoreApplication>
+#include <QtCore/QThread>
+
 #include <crl/crl_async.h>
 #include <lz4.h>
 
@@ -24,6 +27,7 @@ namespace {
 constexpr auto kMaxFrames = 180;
 constexpr auto kCacheVersion = 2;
 constexpr auto kPreloadFrames = 3;
+constexpr auto kIdleUnloadTimeout = crl::time(1000);
 
 struct CacheHeader {
 	int version = 0;
@@ -178,7 +182,7 @@ std::optional<Cache> Cache::FromSerialized(
 	if (header.version != kCacheVersion
 		|| size != requestedSize
 		|| header.frames <= 0
-		|| header.frames >= kMaxFrames
+		|| header.frames > kMaxFrames
 		|| header.length <= 0
 		|| header.length > (size * size * header.frames * sizeof(int32))
 		|| (serialized.size() != sizeof(CacheHeader)
@@ -200,7 +204,7 @@ std::optional<Cache> Cache::FromSerialized(
 		reinterpret_cast<char*>(full.bits()),
 		header.length,
 		full.bytesPerLine() * full.height());
-	if (decompressed <= 0) {
+	if (decompressed != full.sizeInBytes()) {
 		return {};
 	}
 	memcpy(
@@ -283,15 +287,7 @@ void Cache::reserve(int frames) {
 	Expects(!_finished);
 
 	const auto rows = (frames + kPerRow - 1) / kPerRow;
-	if (const auto add = rows - int(_images.size()); add > 0) {
-		_images.resize(rows);
-		for (auto e = end(_images), i = e - add; i != e; ++i) {
-			(*i) = QImage(
-				_size,
-				_size * kPerRow,
-				QImage::Format_ARGB32_Premultiplied);
-		}
-	}
+	_images.reserve(rows);
 	_durations.reserve(frames);
 }
 
@@ -364,7 +360,7 @@ void Cache::finish() {
 			}
 		}
 	}
-	if (const auto perLine = zero * _size) {
+	if (const auto perLine = zero * _size * 4) {
 		auto dst = dstData
 			+ (rows - 1) * dstPerLine * _size
 			+ (columns - zero) * _size * 4;
@@ -373,6 +369,7 @@ void Cache::finish() {
 			dst += dstPerLine;
 		}
 	}
+	_images.clear();
 }
 
 PaintFrameResult Cache::paintCurrentFrame(
@@ -500,7 +497,7 @@ void Renderer::frameReady(
 	}
 	if (const auto count = generator->count()) {
 		if (!_cache.frames()) {
-			_cache.reserve(std::max(count, kMaxFrames));
+			_cache.reserve(std::min(count, kMaxFrames));
 		}
 	}
 	const auto current = _cache.currentFrame();
@@ -672,6 +669,7 @@ QString Instance::entityData() const {
 }
 
 void Instance::paint(QPainter &p, const Context &context) {
+	_lastUsed = crl::now();
 	context.internal.colorized = _colored;
 
 	v::match(_state, [&](Loading &state) {
@@ -701,6 +699,7 @@ void Instance::paint(QPainter &p, const Context &context) {
 }
 
 bool Instance::ready() {
+	_lastUsed = crl::now();
 	return v::match(_state, [&](Loading &state) {
 		if (state.hasImagePreview()) {
 			return true;
@@ -717,6 +716,7 @@ bool Instance::ready() {
 }
 
 bool Instance::readyInDefaultState() {
+	_lastUsed = crl::now();
 	return v::match(_state, [&](Loading &state) {
 		if (state.hasImagePreview()) {
 			return true;
@@ -791,6 +791,7 @@ void Instance::repaint() {
 }
 
 void Instance::incrementUsage(not_null<Object*> object) {
+	_lastUsed = crl::now();
 	_usage.emplace(object);
 }
 
@@ -799,15 +800,37 @@ void Instance::decrementUsage(not_null<Object*> object) {
 	if (!_usage.empty()) {
 		return;
 	}
-	v::match(_state, [](Loading &state) {
-		state.cancel();
+	if (unload()) {
+		_lastUsed = 0;
+	}
+}
+
+bool Instance::releaseUnused(crl::time now) {
+	Expects(QThread::currentThread() == QCoreApplication::instance()->thread());
+
+	return (_usage.empty() || now - _lastUsed >= kIdleUnloadTimeout)
+		&& unload();
+}
+
+bool Instance::unload() {
+	return v::match(_state, [](Loading &state) {
+		const auto loading = state.loading();
+		if (loading) {
+			state.cancel();
+		}
+		return loading;
 	}, [&](Caching &state) {
+		auto preview = state.renderer->canMakePreview()
+			? state.renderer->makePreview()
+			: std::move(state.preview);
 		_state = Loading{
 			state.renderer->cancel(),
-			std::move(state.preview),
+			std::move(preview),
 		};
+		return true;
 	}, [&](Cached &state) {
 		_state = state.unload();
+		return true;
 	});
 }
 

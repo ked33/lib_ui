@@ -14,8 +14,10 @@
 #include "base/flags.h"
 
 #include <QtCore/QBuffer>
-#include <QtCore/QFile>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QThread>
 
 #include <crl/crl_async.h>
 #include <xxhash.h>
@@ -93,10 +95,14 @@ namespace {
 struct DefaultSpoilerWaiter {
 	std::condition_variable variable;
 	std::mutex mutex;
+	std::unique_ptr<SpoilerMessCached> retained;
+	std::unique_ptr<SpoilerMessCached> pending;
+	int waiting = 0;
+	bool loading = false;
 };
 struct DefaultSpoiler {
-	std::atomic<const SpoilerMessCached*> cached/* = nullptr*/;
-	std::atomic<DefaultSpoilerWaiter*> waiter/* = nullptr*/;
+	std::atomic<SpoilerMessCached*> cached = nullptr;
+	std::atomic<DefaultSpoilerWaiter*> waiter = nullptr;
 };
 DefaultSpoiler DefaultTextMask;
 DefaultSpoiler DefaultImageCached;
@@ -288,20 +294,31 @@ void PrepareDefaultSpoiler(
 		const char *nameFactory,
 		DescriptorFactory descriptorFactory,
 		Postprocess postprocess) {
-	if (spoiler.waiter.load()) {
+	if (spoiler.cached.load()) {
 		return;
 	}
-	const auto waiter = new DefaultSpoilerWaiter();
-	auto expected = (DefaultSpoilerWaiter*)nullptr;
-	if (!spoiler.waiter.compare_exchange_strong(expected, waiter)) {
-		delete waiter;
+	auto waiter = spoiler.waiter.load();
+	if (!waiter) {
+		const auto created = new DefaultSpoilerWaiter();
+		auto expected = (DefaultSpoilerWaiter*)nullptr;
+		if (spoiler.waiter.compare_exchange_strong(expected, created)) {
+			waiter = created;
+		} else {
+			delete created;
+			waiter = expected;
+		}
+	}
+	auto lock = std::unique_lock(waiter->mutex);
+	if (spoiler.cached.load() || waiter->loading || waiter->pending) {
 		return;
 	}
+	waiter->loading = true;
+	lock.unlock();
 	const auto name = QString::fromUtf8(nameFactory);
 	const auto folder = DefaultMaskCacheFolder();
 	const auto descriptor = descriptorFactory();
 	StartDefaultSpoilerTask();
-	crl::async([=, &spoiler] {
+	crl::async([=] {
 		const auto finish = gsl::finally(FinishDefaultSpoilerTask);
 		auto cached = ReadDefaultMask(
 			folder,
@@ -311,33 +328,58 @@ void PrepareDefaultSpoiler(
 				.framesCount = descriptor.framesCount,
 				.canvasSize = descriptor.canvasSize,
 			});
-		spoiler.cached = postprocess(cached
+		auto prepared = cached
 			? std::make_unique<SpoilerMessCached>(std::move(*cached))
-			: std::make_unique<SpoilerMessCached>(
-				GenerateSpoilerMess(descriptor))
-		).release();
+			: postprocess(std::make_unique<SpoilerMessCached>(
+				GenerateSpoilerMess(descriptor)));
+		if (!cached && !folder.isEmpty()) {
+			WriteDefaultMask(folder, name, *prepared);
+		}
 		{
 			auto lock = std::unique_lock(waiter->mutex);
-			waiter->variable.notify_all();
+			waiter->pending = std::move(prepared);
+			waiter->loading = false;
 		}
-		if (!cached) {
-			WriteDefaultMask(folder, name, *spoiler.cached);
-		}
+		waiter->variable.notify_all();
 	});
 }
 
+template <typename Prepare>
 [[nodiscard]] const SpoilerMessCached &WaitDefaultSpoiler(
-		DefaultSpoiler &spoiler) {
+		DefaultSpoiler &spoiler,
+		Prepare prepare) {
+	Expects(QThread::currentThread() == QCoreApplication::instance()->thread());
+
+	prepare();
 	const auto &cached = spoiler.cached;
 	if (const auto result = cached.load()) {
 		return *result;
 	}
 	const auto waiter = spoiler.waiter.load();
 	Assert(waiter != nullptr);
+	auto lock = std::unique_lock(waiter->mutex);
+	++waiter->waiting;
+	const auto finish = gsl::finally([&] { --waiter->waiting; });
 	while (true) {
-		auto lock = std::unique_lock(waiter->mutex);
 		if (const auto result = cached.load()) {
 			return *result;
+		}
+		if (waiter->pending) {
+			if (waiter->retained) {
+				*waiter->retained = std::move(*waiter->pending);
+				waiter->pending = nullptr;
+			} else {
+				waiter->retained = std::move(waiter->pending);
+			}
+			const auto result = waiter->retained.get();
+			spoiler.cached = result;
+			return *result;
+		}
+		if (!waiter->loading) {
+			lock.unlock();
+			prepare();
+			lock.lock();
+			continue;
 		}
 		waiter->variable.wait(lock);
 	}
@@ -889,11 +931,7 @@ void PreloadTextSpoilerMask(rpl::lifetime &lifetime) {
 }
 
 const SpoilerMessCached &DefaultTextSpoilerMask() {
-	[[maybe_unused]] static const auto once = [&] {
-		PrepareTextSpoilerMask();
-		return 0;
-	}();
-	return WaitDefaultSpoiler(DefaultTextMask);
+	return WaitDefaultSpoiler(DefaultTextMask, PrepareTextSpoilerMask);
 }
 
 void PreloadImageSpoiler() {
@@ -922,11 +960,32 @@ void PreloadImageSpoiler() {
 }
 
 const SpoilerMessCached &DefaultImageSpoiler() {
-	[[maybe_unused]] static const auto once = [&] {
-		PreloadImageSpoiler();
-		return 0;
-	}();
-	return WaitDefaultSpoiler(DefaultImageCached);
+	return WaitDefaultSpoiler(DefaultImageCached, PreloadImageSpoiler);
+}
+
+int ReleaseDefaultSpoilerImages() {
+	Expects(QThread::currentThread() == QCoreApplication::instance()->thread());
+
+	auto count = 0;
+	for (const auto spoiler : { &DefaultTextMask, &DefaultImageCached }) {
+		const auto waiter = spoiler->waiter.load();
+		if (!waiter) {
+			continue;
+		}
+		auto lock = std::unique_lock(waiter->mutex);
+		if (waiter->loading || waiter->waiting) {
+			continue;
+		}
+		if (const auto cached = spoiler->cached.exchange(nullptr)) {
+			cached->_image = QImage();
+			++count;
+		}
+		if (waiter->pending) {
+			waiter->pending = nullptr;
+			++count;
+		}
+	}
+	return count;
 }
 
 } // namespace Ui

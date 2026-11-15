@@ -18,10 +18,12 @@
 #include "ui/ui_utility.h"
 #include "styles/style_basic.h"
 
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
-#include <QtCore/QFile>
-#include <QtCore/QDir>
+#include <QtCore/QThread>
 
 #include <crl/crl_async.h>
 
@@ -55,6 +57,8 @@ public:
 	explicit Instance(int size);
 
 	bool cached() const;
+	bool sourceImagesNeeded() const;
+	int releaseImages();
 	void draw(QPainter &p, EmojiPtr emoji, int x, int y);
 
 private:
@@ -68,6 +72,7 @@ private:
 	std::vector<QPixmap> _sprites;
 	base::binary_guard _generating;
 	bool _unsupported = false;
+	bool _released = false;
 
 };
 
@@ -365,9 +370,13 @@ std::vector<QImage> LoadAndValidateSprites(int id) {
 void ClearUniversalChecked() {
 	Expects(InstanceNormal != nullptr && InstanceLarge != nullptr);
 
-	if (Universal
-		&& InstanceNormal->cached()
-		&& InstanceLarge->cached()) {
+	auto needed = InstanceNormal->sourceImagesNeeded()
+		|| InstanceLarge->sourceImagesNeeded();
+#ifdef Q_OS_MAC
+	needed = needed
+		|| (TouchbarInstance && TouchbarInstance->sourceImagesNeeded());
+#endif // Q_OS_MAC
+	if (Universal && !needed) {
 		if (CanClearUniversal) {
 			Universal->clear();
 		}
@@ -816,11 +825,36 @@ bool Instance::cached() const {
 	return (Universal->id() == _id) && (_sprites.size() == SpritesCount);
 }
 
+bool Instance::sourceImagesNeeded() const {
+	return !_released && !_unsupported && !cached();
+}
+
+int Instance::releaseImages() {
+	if (_generating) {
+		return 0;
+	}
+	const auto count = int(_sprites.size());
+	_sprites.clear();
+	_released = true;
+	return count;
+}
+
 void Instance::draw(QPainter &p, EmojiPtr emoji, int x, int y) {
 	if (_unsupported) {
 		return;
+	} else if (base::take(_released)) {
+		_id = Universal->id();
+		readCache();
+		if (cached()) {
+			ClearUniversalChecked();
+		} else {
+			generateCache();
+		}
 	} else if (Universal && Universal->id() != _id) {
 		generateCache();
+	}
+	if (_unsupported) {
+		return;
 	}
 	const auto sprite = emoji->sprite();
 	if (sprite >= _sprites.size()) {
@@ -863,6 +897,9 @@ void Instance::checkUniversalImages() {
 
 void Instance::generateCache() {
 	checkUniversalImages();
+	if (_unsupported) {
+		return;
+	}
 
 	const auto cachePath = internal::CacheFileFolder();
 	if (cachePath.isEmpty()) {
@@ -907,6 +944,29 @@ void ClearSourceImages(const std::shared_ptr<UniversalImages> &images) {
 		CanClearUniversal = true;
 		ClearUniversalChecked();
 	}
+}
+
+int ReleaseCachedImages() {
+	Expects(QThread::currentThread() == QCoreApplication::instance()->thread());
+
+	auto count = int(MainEmojiMap.size());
+	MainEmojiMap.clear();
+	for (const auto &map : ranges::views::values(OtherEmojiMap)) {
+		count += int(map.size());
+	}
+	OtherEmojiMap.clear();
+	if (!InstanceNormal || !InstanceLarge) {
+		return count;
+	}
+	count += InstanceNormal->releaseImages();
+	count += InstanceLarge->releaseImages();
+#ifdef Q_OS_MAC
+	if (TouchbarInstance) {
+		count += TouchbarInstance->releaseImages();
+	}
+#endif
+	ClearUniversalChecked();
+	return count;
 }
 
 void ReplaceSourceImages(std::shared_ptr<UniversalImages> images) {

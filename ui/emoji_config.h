@@ -179,6 +179,7 @@ private:
 
 [[nodiscard]] const std::shared_ptr<UniversalImages> &SourceImages();
 void ClearSourceImages(const std::shared_ptr<UniversalImages> &images);
+[[nodiscard]] int ReleaseCachedImages();
 
 } // namespace Emoji
 } // namespace Ui

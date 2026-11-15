@@ -244,15 +244,18 @@ public:
 
 	void incrementUsage(not_null<Object*> object);
 	void decrementUsage(not_null<Object*> object);
+	[[nodiscard]] bool releaseUnused(crl::time now);
 
 	void repaint();
 
 private:
 	void load(Loading &state);
+	[[nodiscard]] bool unload();
 
 	std::variant<Loading, Caching, Cached> _state;
 	base::flat_set<not_null<Object*>> _usage;
 	Fn<void(not_null<Instance*> that, RepaintRequest)> _repaintLater;
+	crl::time _lastUsed = 0;
 	bool _colored = false;
 
 };

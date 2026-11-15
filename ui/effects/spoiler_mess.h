@@ -75,6 +75,8 @@ public:
 		std::optional<Validator> validator = {});
 
 private:
+	friend int ReleaseDefaultSpoilerImages();
+
 	QImage _image;
 	crl::time _frameDuration = 0;
 	int _framesCount = 0;
@@ -113,5 +115,6 @@ void PreloadTextSpoilerMask(rpl::lifetime &lifetime);
 [[nodiscard]] const SpoilerMessCached &DefaultTextSpoilerMask();
 void PreloadImageSpoiler();
 [[nodiscard]] const SpoilerMessCached &DefaultImageSpoiler();
+[[nodiscard]] int ReleaseDefaultSpoilerImages();
 
 } // namespace Ui
