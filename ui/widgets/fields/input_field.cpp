@@ -3618,7 +3618,10 @@ void InputField::performUndoRedo(bool redo) {
 	checkContentHeight();
 }
 
-void InputField::processFormatting(int insertPosition, int insertEnd) {
+void InputField::processFormatting(
+		int insertPosition,
+		int insertEnd,
+		bool exact) {
 	// First tag handling (the one we inserted text to).
 	bool startTagFound = false;
 	bool breakTagOnNotLetter = false;
@@ -3638,6 +3641,7 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 		_insertedTagsReplace,
 		_instantViewEditorTagsEnabled,
 		insertedTagsProcessor);
+	const auto decodePairs = exact && (breakTagOnNotLetterTill == insertEnd);
 	using ActionType = FormattingAction::Type;
 	while (true) {
 		FormattingAction action;
@@ -3801,13 +3805,18 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 							action.intervalStart = fragmentPosition + (ch - textStart);
 							action.intervalEnd = action.intervalStart + emojiLength;
 						}
-						if (emojiLength > 1) {
-							_emojiSurrogateAmount += emojiLength - 1;
-						}
 						break;
 					}
 
-					if (breakTagOnNotLetter && !ch->isLetterOrNumber()) {
+					const auto surrogatePair = (ch + 1 < textEnd)
+						&& ch->isHighSurrogate()
+						&& (ch + 1)->isLowSurrogate();
+					const auto insertedPair = surrogatePair
+						&& (fragmentPosition + (ch - textStart) + 1 < insertEnd);
+					if (breakTagOnNotLetter
+						&& !QChar::isLetterOrNumber((decodePairs && insertedPair)
+							? QChar::surrogateToUcs4(*ch, *(ch + 1))
+							: ch->unicode())) {
 						// Remove tag name till the end if no current action is prepared.
 						if (action.type != ActionType::Invalid) {
 							break;
@@ -3820,7 +3829,7 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 							break;
 						}
 					}
-					if (ch + 1 < textEnd && ch->isHighSurrogate() && (ch + 1)->isLowSurrogate()) {
+					if (surrogatePair) {
 						++ch;
 					}
 				}
@@ -4016,6 +4025,8 @@ void InputField::documentContentsChanged(
 	if (_correcting) {
 		return;
 	}
+	const auto rawPosition = position;
+	const auto rawInserted = charsRemoved ? 0 : charsAdded;
 	// In case of input method events Qt emits
 	// document content change signals for a whole
 	// text block where the even took place.
@@ -4054,18 +4065,26 @@ void InputField::documentContentsChanged(
 		? _realCharsAdded
 		: charsAdded;
 
+	auto publish = true;
 	if (!_performingUndoRedo) {
+		const auto uncorrected = document->toRawText();
 		_correcting = true;
 		QTextCursor(document).joinPreviousEditBlock();
 
+		const auto countBefore = document->characterCount();
 		chopByMaxLength(insertPosition, insertLength);
+		const auto chopped = countBefore - document->characterCount();
 		const auto inserted = (_maxLength > 0)
 			? (std::max(
 				std::min(insertPosition + insertLength, _maxLength),
 				insertPosition) - insertPosition)
 			: insertLength;
+		const auto exact = (rawInserted > 0) && (insertLength == rawInserted)
+			&& (insertPosition == rawPosition)
+			&& (rawInserted <= countBefore - 1 - rawPosition)
+			&& (inserted == std::max(rawInserted - chopped, 0));
 		const auto pageSize = document->pageSize();
-		processFormatting(insertPosition, insertPosition + inserted);
+		processFormatting(insertPosition, insertPosition + inserted, exact);
 		if (document->pageSize() != pageSize) {
 			document->setPageSize(pageSize);
 		}
@@ -4075,6 +4094,12 @@ void InputField::documentContentsChanged(
 		updateRootFrameFormat();
 		_correcting = false;
 		QTextCursor(document).endEditBlock();
+		publish = ContentsChange::Compose(
+			uncorrected,
+			document->toRawText(),
+			position,
+			charsRemoved,
+			charsAdded);
 	}
 
 	if (_formattingCursorUpdate) {
@@ -4083,9 +4108,9 @@ void InputField::documentContentsChanged(
 	}
 
 	handleContentsChanged();
-	const auto added = charsAdded - _emojiSurrogateAmount;
-	_documentContentsChanges.fire({ position, charsRemoved, added });
-	_emojiSurrogateAmount = 0;
+	if (publish) {
+		_documentContentsChanges.fire({ position, charsRemoved, charsAdded });
+	}
 }
 
 void InputField::updateRootFrameFormat() {
@@ -4977,6 +5002,9 @@ void InputField::inputMethodEventInner(QInputMethodEvent *e) {
 		_lastPreEditText = preedit;
 		startPlaceholderAnimation();
 	}
+	if (InputMethodCommit::Paste(this, e)) {
+		return;
+	}
 	if (!e->commitString().isEmpty()) {
 		if (Emoji::Find(e->commitString(), nullptr)) {
 			// Finalize the active IME composition in the underlying QTextEdit.
@@ -4995,13 +5023,17 @@ void InputField::inputMethodEventInner(QInputMethodEvent *e) {
 			return;
 		}
 	}
-	_inputMethodCommit = e->commitString();
-
+	const auto text = e->commitString();
 	const auto weak = base::make_weak(this);
-	_inner->QTextEdit::inputMethodEvent(e);
-
-	if (weak && _inputMethodCommit.has_value()) {
-		const auto text = *base::take(_inputMethodCommit);
+	const auto forward = [&](not_null<QInputMethodEvent*> event) {
+		_inputMethodCommit = event->commitString();
+		_inner->QTextEdit::inputMethodEvent(event);
+		return weak && base::take(_inputMethodCommit).has_value();
+	};
+	_inputMethodCommit = std::nullopt;
+	if (InputMethodCommit::Perform(_inner.get(), e, forward)
+		? bool(weak)
+		: forward(e)) {
 		if (!processMarkdownReplaces(text)) {
 			processInstantReplaces(text);
 		}
